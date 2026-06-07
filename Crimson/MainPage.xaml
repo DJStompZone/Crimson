@@ -1,14 +1,128 @@
-﻿<Page
+<Page
     x:Class="Crimson.MainPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:Crimson"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
     mc:Ignorable="d"
-    Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+    Background="#111111">
 
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
 
+        <Grid
+            x:Name="TopBar"
+            Grid.Row="0"
+            Background="#1E1E1E"
+            Padding="8,6">
+
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Button
+                x:Name="BackButton"
+                Grid.Column="0"
+                Width="36"
+                Height="36"
+                Margin="0,0,6,0"
+                Click="BackButton_Click"
+                IsEnabled="False">
+                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72B;" />
+            </Button>
+
+            <Button
+                x:Name="ForwardButton"
+                Grid.Column="1"
+                Width="36"
+                Height="36"
+                Margin="0,0,6,0"
+                Click="ForwardButton_Click"
+                IsEnabled="False">
+                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72A;" />
+            </Button>
+
+            <Button
+                x:Name="ReloadButton"
+                Grid.Column="2"
+                Width="36"
+                Height="36"
+                Margin="0,0,8,0"
+                Click="ReloadButton_Click">
+                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" />
+            </Button>
+
+            <TextBox
+                x:Name="AddressBox"
+                Grid.Column="3"
+                Height="36"
+                PlaceholderText="Search YouTube or paste URL"
+                KeyDown="AddressBox_KeyDown" />
+
+            <ToggleSwitch
+                x:Name="AdBlockToggle"
+                Grid.Column="4"
+                Margin="10,0,0,0"
+                Header="Adblock"
+                IsOn="True"
+                Toggled="AdBlockToggle_Toggled" />
+
+            <ToggleSwitch
+                x:Name="SponsorBlockToggle"
+                Grid.Column="5"
+                Margin="10,0,0,0"
+                Header="SponsorBlock"
+                IsOn="True"
+                Toggled="SponsorBlockToggle_Toggled" />
+
+            <Button
+                x:Name="HomeButton"
+                Grid.Column="6"
+                Width="36"
+                Height="36"
+                Margin="10,0,0,0"
+                Click="HomeButton_Click">
+                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE80F;" />
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <muxc:WebView2
+                x:Name="YouTubeView"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch" />
+
+            <Border
+                x:Name="LoadingOverlay"
+                Background="#111111"
+                Opacity="0.92"
+                Visibility="Visible">
+                <StackPanel
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                    <ProgressRing
+                        Width="64"
+                        Height="64"
+                        IsActive="True" />
+                    <TextBlock
+                        Margin="0,18,0,0"
+                        Text="Loading Crimson"
+                        Foreground="White"
+                        FontSize="18"
+                        HorizontalAlignment="Center" />
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Page>
