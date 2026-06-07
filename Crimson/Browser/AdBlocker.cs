@@ -4,13 +4,9 @@ using System.Linq;
 
 namespace Crimson.Browser
 {
-    /// <summary>
-    /// Performs conservative request blocking for obvious ad/tracker endpoints while preserving
-    /// YouTube media playback URLs. Most video-ad handling lives in the injected page scripts.
-    /// </summary>
     public sealed class AdBlocker
     {
-        private readonly IReadOnlyList<string> blockedHostParts = new[]
+        private static readonly IReadOnlyList<string> BlockedHostParts = new[]
         {
             "doubleclick.net",
             "googlesyndication.com",
@@ -22,7 +18,7 @@ namespace Crimson.Browser
             "ssl.google-analytics.com"
         };
 
-        private readonly IReadOnlyList<string> blockedUrlParts = new[]
+        private static readonly IReadOnlyList<string> BlockedUrlParts = new[]
         {
             "/pagead/",
             "/ptracking",
@@ -30,36 +26,44 @@ namespace Crimson.Browser
             "/api/stats/qoe",
             "/youtubei/v1/log_event",
             "/youtubei/v1/att/get",
-            "/youtubei/v1/player/ad_break",
             "adformat=",
             "adunit",
             "ad_type",
             "googleads"
         };
 
-        public bool ShouldBlock(string rawUri)
+        public bool ShouldBlock(string? rawUri)
         {
-            if (!Uri.TryCreate(rawUri, UriKind.Absolute, out Uri uri))
+            if (string.IsNullOrWhiteSpace(rawUri))
             {
                 return false;
             }
 
-            string host = uri.Host.ToLowerInvariant();
-            string url = rawUri.ToLowerInvariant();
+            if (!Uri.TryCreate(rawUri, UriKind.Absolute, out Uri? uri))
+            {
+                return false;
+            }
+
+            string host = uri.Host;
+            string url = rawUri;
 
             if (IsVideoPlaybackUrl(host, url))
             {
                 return false;
             }
 
-            return blockedHostParts.Any(host.Contains) || blockedUrlParts.Any(url.Contains);
+            return ContainsAny(host, BlockedHostParts) || ContainsAny(url, BlockedUrlParts);
         }
 
         private static bool IsVideoPlaybackUrl(string host, string url)
         {
-            return host.EndsWith("googlevideo.com") ||
-                   host.Contains("googlevideo.com") ||
-                   url.Contains("/videoplayback");
+            return host.Contains("googlevideo.com", StringComparison.OrdinalIgnoreCase) ||
+                   url.Contains("/videoplayback", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ContainsAny(string value, IReadOnlyList<string> needles)
+        {
+            return needles.Any(needle => value.Contains(needle, StringComparison.OrdinalIgnoreCase));
         }
     }
 }

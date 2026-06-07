@@ -1,7 +1,6 @@
 using Crimson.Browser;
 using Microsoft.Web.WebView2.Core;
 using System;
-using System.IO;
 using System.Threading.Tasks;
 using Windows.Storage;
 using Windows.Storage.Streams;
@@ -12,14 +11,12 @@ using Windows.UI.Xaml.Input;
 
 namespace Crimson
 {
-    /// <summary>
-    /// Hosts the YouTube WebView2 shell and coordinates request blocking, script injection,
-    /// and lightweight browser controls.
-    /// </summary>
     public sealed partial class MainPage : Page
     {
         private const string HomeUrl = "https://www.youtube.com/";
+
         private readonly AdBlocker adBlocker = new();
+
         private bool isAdBlockEnabled = true;
         private bool isSponsorBlockEnabled = true;
 
@@ -33,15 +30,17 @@ namespace Crimson
         {
             try
             {
-                Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF111111");
-                Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-features=msSmartScreenProtection");
+                Environment.SetEnvironmentVariable(
+                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                    "--disable-features=msSmartScreenProtection"
+                );
 
                 await YouTubeView.EnsureCoreWebView2Async();
 
                 ConfigureWebView();
                 await InjectScriptsAsync();
 
-                YouTubeView.CoreWebView2.Navigate(HomeUrl);
+                Navigate(HomeUrl);
             }
             catch (Exception ex)
             {
@@ -52,7 +51,12 @@ namespace Crimson
 
         private void ConfigureWebView()
         {
-            CoreWebView2 core = YouTubeView.CoreWebView2;
+            CoreWebView2? core = YouTubeView.CoreWebView2;
+
+            if (core is null)
+            {
+                throw new InvalidOperationException("WebView2 initialized, but CoreWebView2 is still null. Extremely normal Microsoft behavior.");
+            }
 
             core.Settings.AreDefaultContextMenusEnabled = true;
             core.Settings.AreDevToolsEnabled = true;
@@ -71,13 +75,20 @@ namespace Crimson
 
         private async Task InjectScriptsAsync()
         {
+            CoreWebView2? core = YouTubeView.CoreWebView2;
+
+            if (core is null)
+            {
+                return;
+            }
+
             string pruneScript = await ReadPackageFileAsync("ms-appx:///Scripts/youtube-prune.js");
             string cleanupScript = await ReadPackageFileAsync("ms-appx:///Scripts/cleanup.js");
             string sponsorBlockScript = await ReadPackageFileAsync("ms-appx:///Scripts/sponsorblock.js");
 
-            await YouTubeView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(pruneScript);
-            await YouTubeView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(cleanupScript);
-            await YouTubeView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(sponsorBlockScript);
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(pruneScript);
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(cleanupScript);
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(sponsorBlockScript);
         }
 
         private static async Task<string> ReadPackageFileAsync(string uri)
@@ -86,32 +97,24 @@ namespace Crimson
             return await FileIO.ReadTextAsync(file);
         }
 
-        private async void Core_WebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
+        private void Core_WebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
         {
             if (!isAdBlockEnabled)
             {
                 return;
             }
 
-            string requestUri = args.Request.Uri;
+            string? requestUri = args.Request.Uri;
 
             if (!adBlocker.ShouldBlock(requestUri))
             {
                 return;
             }
 
-            // Create an empty InMemoryRandomAccessStream and use it for the response
-            var memoryStream = new InMemoryRandomAccessStream();
-            var output = memoryStream.GetOutputStreamAt(0);
-            var dataWriter = new DataWriter(output);
-            dataWriter.WriteBytes(Array.Empty<byte>());
-            await dataWriter.StoreAsync();
-            await dataWriter.FlushAsync();
-            // Reset position so WebView2 can read from the start
-            memoryStream.Seek(0);
+            InMemoryRandomAccessStream emptyStream = new();
 
             args.Response = sender.Environment.CreateWebResourceResponse(
-                memoryStream,
+                emptyStream,
                 204,
                 "No Content",
                 "Content-Type: text/plain\r\nCache-Control: no-store"
@@ -126,14 +129,14 @@ namespace Crimson
         private void Core_NavigationCompleted(CoreWebView2 sender, CoreWebView2NavigationCompletedEventArgs args)
         {
             LoadingOverlay.Visibility = Visibility.Collapsed;
-            AddressBox.Text = sender.Source;
+            AddressBox.Text = sender.Source ?? string.Empty;
             UpdateNavigationButtons();
             _ = PushSettingsToPageAsync();
         }
 
         private void Core_SourceChanged(CoreWebView2 sender, CoreWebView2SourceChangedEventArgs args)
         {
-            AddressBox.Text = sender.Source;
+            AddressBox.Text = sender.Source ?? string.Empty;
             UpdateNavigationButtons();
         }
 
@@ -141,38 +144,46 @@ namespace Crimson
         {
             args.Handled = true;
 
-            if (IsAllowedNavigation(args.Uri))
+            string? targetUri = args.Uri;
+
+            if (!string.IsNullOrWhiteSpace(targetUri) && IsAllowedNavigation(targetUri))
             {
-                sender.Navigate(args.Uri);
+                sender.Navigate(targetUri);
             }
         }
 
         private void Core_ContainsFullScreenElementChanged(CoreWebView2 sender, object args)
         {
-            TopBar.Visibility = sender.ContainsFullScreenElement ? Visibility.Collapsed : Visibility.Visible;
+            TopBar.Visibility = sender.ContainsFullScreenElement
+                ? Visibility.Collapsed
+                : Visibility.Visible;
         }
 
         private void UpdateNavigationButtons()
         {
-            CoreWebView2 core = YouTubeView.CoreWebView2;
+            CoreWebView2? core = YouTubeView.CoreWebView2;
 
-            BackButton.IsEnabled = core != null && core.CanGoBack;
-            ForwardButton.IsEnabled = core != null && core.CanGoForward;
+            BackButton.IsEnabled = core?.CanGoBack == true;
+            ForwardButton.IsEnabled = core?.CanGoForward == true;
         }
 
         private void BackButton_Click(object sender, RoutedEventArgs e)
         {
-            if (YouTubeView.CoreWebView2?.CanGoBack == true)
+            CoreWebView2? core = YouTubeView.CoreWebView2;
+
+            if (core?.CanGoBack == true)
             {
-                YouTubeView.CoreWebView2.GoBack();
+                core.GoBack();
             }
         }
 
         private void ForwardButton_Click(object sender, RoutedEventArgs e)
         {
-            if (YouTubeView.CoreWebView2?.CanGoForward == true)
+            CoreWebView2? core = YouTubeView.CoreWebView2;
+
+            if (core?.CanGoForward == true)
             {
-                YouTubeView.CoreWebView2.GoForward();
+                core.GoForward();
             }
         }
 
@@ -183,7 +194,7 @@ namespace Crimson
 
         private void HomeButton_Click(object sender, RoutedEventArgs e)
         {
-            YouTubeView.CoreWebView2?.Navigate(HomeUrl);
+            Navigate(HomeUrl);
         }
 
         private void AddressBox_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -194,7 +205,9 @@ namespace Crimson
             }
 
             e.Handled = true;
-            YouTubeView.CoreWebView2?.Navigate(BuildNavigationTarget(AddressBox.Text));
+
+            string target = BuildNavigationTarget(AddressBox.Text);
+            Navigate(target);
         }
 
         private void AdBlockToggle_Toggled(object sender, RoutedEventArgs e)
@@ -208,36 +221,43 @@ namespace Crimson
             _ = PushSettingsToPageAsync();
         }
 
-        private async Task PushSettingsToPageAsync()
+        private void Navigate(string target)
         {
-            if (YouTubeView.CoreWebView2 == null)
+            CoreWebView2? core = YouTubeView.CoreWebView2;
+
+            if (core is null)
             {
                 return;
             }
 
-            string sponsorBlockEnabled = isSponsorBlockEnabled.ToString().ToLowerInvariant();
-            string script = $"window.__crimsonSettings = {{ sponsorBlockEnabled: {sponsorBlockEnabled} }}; window.dispatchEvent(new Event('crimson-settings-changed'));";
-
-            try
-            {
-                await YouTubeView.CoreWebView2.ExecuteScriptAsync(script);
-            }
-            catch
-            {
-                // Page navigation can race script execution. Harmless; next navigation tick retries.
-            }
+            core.Navigate(target);
         }
 
-        private static string BuildNavigationTarget(string input)
+        private async Task PushSettingsToPageAsync()
         {
-            string trimmed = input.Trim();
+            CoreWebView2? core = YouTubeView.CoreWebView2;
+
+            if (core is null)
+            {
+                return;
+            }
+
+            string sponsorBlockValue = isSponsorBlockEnabled ? "true" : "false";
+            string script = $"window.__crimsonSettings = {{ sponsorBlockEnabled: {sponsorBlockValue} }}; window.dispatchEvent(new Event('crimson-settings-changed'));";
+
+            await core.ExecuteScriptAsync(script);
+        }
+
+        private static string BuildNavigationTarget(string? input)
+        {
+            string trimmed = input?.Trim() ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(trimmed))
             {
                 return HomeUrl;
             }
 
-            if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri absoluteUri))
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri? absoluteUri))
             {
                 return absoluteUri.ToString();
             }
@@ -250,9 +270,14 @@ namespace Crimson
             return "https://www.youtube.com/results?search_query=" + Uri.EscapeDataString(trimmed);
         }
 
-        private static bool IsAllowedNavigation(string rawUri)
+        private static bool IsAllowedNavigation(string? rawUri)
         {
-            if (!Uri.TryCreate(rawUri, UriKind.Absolute, out Uri uri))
+            if (string.IsNullOrWhiteSpace(rawUri))
+            {
+                return false;
+            }
+
+            if (!Uri.TryCreate(rawUri, UriKind.Absolute, out Uri? uri))
             {
                 return false;
             }
@@ -261,10 +286,8 @@ namespace Crimson
 
             return host.EndsWith("youtube.com") ||
                    host.EndsWith("youtu.be") ||
-                   host.EndsWith("youtube-nocookie.com") ||
                    host.EndsWith("google.com") ||
                    host.EndsWith("gstatic.com") ||
-                   host.EndsWith("googleapis.com") ||
                    host.EndsWith("googleusercontent.com");
         }
 
