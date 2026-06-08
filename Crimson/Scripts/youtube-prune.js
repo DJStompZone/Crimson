@@ -2,6 +2,7 @@
     "use strict";
 
     const logPrefix = "[Crimson:Prune]";
+
     const youtubeApiMarkers = [
         "/youtubei/v1/player",
         "/youtubei/v1/next",
@@ -48,6 +49,62 @@
         "instreamVideoAdRenderer"
     ]);
 
+    const adSelectors = [
+        ".html5-video-player.ad-showing",
+        ".html5-video-player.ad-interrupting",
+        ".ytp-ad-player-overlay",
+        ".ytp-ad-text",
+        ".ytp-ad-preview-container",
+        ".ytp-ad-image-overlay",
+        ".ytp-ad-module",
+        ".video-ads"
+    ];
+
+    const skipSelectors = [
+        ".ytp-ad-skip-button",
+        ".ytp-skip-ad-button",
+        "button.ytp-ad-skip-button-modern",
+        ".ytp-ad-skip-button-modern",
+        "button[class*='skip']"
+    ];
+
+    const playSelectors = [
+        ".ytp-large-play-button",
+        ".ytp-play-button[aria-label='Play']",
+        ".ytp-play-button[title='Play']",
+        "button[aria-label='Play']",
+        "button[aria-label^='Play']",
+        "button[title='Play']",
+        "button[title^='Play']"
+    ];
+
+    const startTimeThresholdSeconds = 0.5;
+    const playKickCooldownMs = 450;
+    const userPauseCooldownMs = 30000;
+
+    let savedRate = null;
+    let savedMuted = null;
+    let lastAdTouchAt = 0;
+    let lastPlayKickAt = 0;
+    let lastUserInputAt = 0;
+    let lastUserPauseAt = 0;
+    let suppressPauseTrackingUntil = 0;
+    let lastVideoElement = null;
+    let lastMainVideoKey = null;
+    let autoPlayedMainVideoKeys = new Set();
+    let autoPlayedAdKeys = new Set();
+    let userPausedMainVideoKeys = new Set();
+    let userPausedAdKeys = new Set();
+
+    function readSettings() {
+        const settings = window.__crimsonSettings;
+
+        return {
+            adBlockEnabled: settings?.adBlockEnabled !== false,
+            autoplayAtStart: settings?.xboxAutoplayAtStart !== false
+        };
+    }
+
     function shouldPruneUrl(rawUrl) {
         if (!rawUrl || typeof rawUrl !== "string") {
             return false;
@@ -58,6 +115,14 @@
 
     function isPlainObject(value) {
         return value !== null && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function containsRendererAdKey(value) {
+        if (!isPlainObject(value)) {
+            return false;
+        }
+
+        return Object.keys(value).some(key => rendererAdKeys.has(key));
     }
 
     function pruneJson(value, depth = 0) {
@@ -99,14 +164,6 @@
         return value;
     }
 
-    function containsRendererAdKey(value) {
-        if (!isPlainObject(value)) {
-            return false;
-        }
-
-        return Object.keys(value).some(key => rendererAdKeys.has(key));
-    }
-
     function tryPruneText(text, source) {
         if (!text || typeof text !== "string") {
             return text;
@@ -135,9 +192,10 @@
             const response = await originalFetch.apply(this, arguments);
 
             try {
+                const settings = readSettings();
                 const url = typeof input === "string" ? input : input?.url;
 
-                if (!shouldPruneUrl(url)) {
+                if (!settings.adBlockEnabled || !shouldPruneUrl(url)) {
                     return response;
                 }
 
@@ -176,7 +234,9 @@
         };
 
         XMLHttpRequest.prototype.send = function crimsonSend() {
-            if (!shouldPruneUrl(this.__crimsonUrl)) {
+            const settings = readSettings();
+
+            if (!settings.adBlockEnabled || !shouldPruneUrl(this.__crimsonUrl)) {
                 return originalSend.apply(this, arguments);
             }
 
@@ -227,14 +287,14 @@
             Object.defineProperty(window, name, {
                 configurable: true,
                 get() {
-                    if (currentValue && typeof currentValue === "object") {
+                    if (currentValue && typeof currentValue === "object" && readSettings().adBlockEnabled) {
                         pruneJson(currentValue);
                     }
 
                     return currentValue;
                 },
                 set(value) {
-                    if (value && typeof value === "object") {
+                    if (value && typeof value === "object" && readSettings().adBlockEnabled) {
                         pruneJson(value);
                     }
 
@@ -242,7 +302,7 @@
                 }
             });
 
-            if (currentValue && typeof currentValue === "object") {
+            if (currentValue && typeof currentValue === "object" && readSettings().adBlockEnabled) {
                 pruneJson(currentValue);
             }
         } catch (error) {
@@ -255,59 +315,316 @@
         patchInitialGlobal("ytInitialData");
     }
 
-    function installAdAccelerator() {
-        let savedRate = null;
-        let savedMuted = null;
-        let lastTouched = 0;
+    function queryFirst(selectors) {
+        for (const selector of selectors) {
+            const node = document.querySelector(selector);
 
-        window.setInterval(() => {
-            const player = document.querySelector(".html5-video-player");
-            const video = document.querySelector("video");
+            if (node) {
+                return node;
+            }
+        }
 
-            if (!player || !video) {
+        return null;
+    }
+
+    function findVideoElement() {
+        const videos = Array.from(document.querySelectorAll("video"));
+
+        if (videos.length === 0) {
+            return null;
+        }
+
+        return videos.find(video => video.duration > 0) || videos[0];
+    }
+
+    function findPlayerElement() {
+        return document.querySelector(".html5-video-player");
+    }
+
+    function getVideoId() {
+        try {
+            const url = new URL(window.location.href);
+
+            if (url.hostname.includes("youtube.com")) {
+                return url.searchParams.get("v") || "unknown-video";
+            }
+
+            if (url.hostname === "youtu.be") {
+                return url.pathname.replace("/", "") || "unknown-video";
+            }
+        } catch {
+            return "unknown-video";
+        }
+
+        return "unknown-video";
+    }
+
+    function getMainVideoKey() {
+        return `${getVideoId()}@${location.pathname}${location.search}`;
+    }
+
+    function getAdKey(video) {
+        const videoKey = getMainVideoKey();
+        const duration = Number.isFinite(video.duration) ? video.duration.toFixed(2) : "unknown-duration";
+        const source = video.currentSrc || video.src || "unknown-source";
+
+        return `${videoKey}:ad:${duration}:${hashString(source)}`;
+    }
+
+    function hashString(value) {
+        let hash = 0;
+
+        for (let index = 0; index < value.length; index += 1) {
+            hash = ((hash << 5) - hash) + value.charCodeAt(index);
+            hash |= 0;
+        }
+
+        return hash.toString(16);
+    }
+
+    function isNearStart(video) {
+        return Number.isFinite(video.currentTime) && video.currentTime <= startTimeThresholdSeconds;
+    }
+
+    function isAdShowing() {
+        const player = findPlayerElement();
+
+        if (player?.classList?.contains("ad-showing")) {
+            return true;
+        }
+
+        if (player?.classList?.contains("ad-interrupting")) {
+            return true;
+        }
+
+        return adSelectors.some(selector => document.querySelector(selector));
+    }
+
+    function clickFirst(selectors) {
+        const button = queryFirst(selectors);
+
+        if (!button) {
+            return false;
+        }
+
+        try {
+            button.click();
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    async function tryPlay(video, reason) {
+        const now = Date.now();
+
+        if (now - lastPlayKickAt < playKickCooldownMs) {
+            return false;
+        }
+
+        lastPlayKickAt = now;
+        suppressPauseTrackingUntil = now + 750;
+
+        clickFirst(playSelectors);
+
+        try {
+            await video.play();
+            console.info(`${logPrefix} autoplay kick succeeded: ${reason}`);
+            return true;
+        } catch (error) {
+            console.debug(`${logPrefix} autoplay kick rejected: ${reason}`, error);
+            return false;
+        }
+    }
+
+    function speedUpAd(video) {
+        if (savedRate === null) {
+            savedRate = video.playbackRate || 1;
+        }
+
+        if (savedMuted === null) {
+            savedMuted = video.muted;
+        }
+
+        video.muted = true;
+
+        try {
+            video.playbackRate = 16;
+        } catch {
+            try {
+                video.playbackRate = 8;
+            } catch {
+                video.playbackRate = 4;
+            }
+        }
+
+        lastAdTouchAt = Date.now();
+    }
+
+    function restoreVideo(video) {
+        if (savedRate === null || Date.now() - lastAdTouchAt <= 1000) {
+            return;
+        }
+
+        try {
+            video.playbackRate = savedRate;
+        } catch {
+            video.playbackRate = 1;
+        }
+
+        video.muted = savedMuted === true;
+
+        savedRate = null;
+        savedMuted = null;
+    }
+
+    function shouldRespectRecentUserPause() {
+        return Date.now() - lastUserPauseAt < userPauseCooldownMs;
+    }
+
+    function handlePausedAdAtStart(video) {
+        const settings = readSettings();
+
+        if (!settings.autoplayAtStart || !video.paused || !isNearStart(video)) {
+            return;
+        }
+
+        const adKey = getAdKey(video);
+
+        if (autoPlayedAdKeys.has(adKey) || userPausedAdKeys.has(adKey) || shouldRespectRecentUserPause()) {
+            return;
+        }
+
+        tryPlay(video, "paused ad at start").then(success => {
+            if (success) {
+                autoPlayedAdKeys.add(adKey);
+            }
+        });
+    }
+
+    function handlePausedMainVideoAtStart(video) {
+        const settings = readSettings();
+
+        if (!settings.autoplayAtStart || !video.paused || !isNearStart(video)) {
+            return;
+        }
+
+        if (!location.href.includes("/watch?")) {
+            return;
+        }
+
+        const mainVideoKey = getMainVideoKey();
+
+        if (autoPlayedMainVideoKeys.has(mainVideoKey) || userPausedMainVideoKeys.has(mainVideoKey) || shouldRespectRecentUserPause()) {
+            return;
+        }
+
+        tryPlay(video, "paused main video at start").then(success => {
+            if (success) {
+                autoPlayedMainVideoKeys.add(mainVideoKey);
+            }
+        });
+    }
+
+    function resetPerVideoStateIfNeeded() {
+        const mainVideoKey = getMainVideoKey();
+
+        if (mainVideoKey === lastMainVideoKey) {
+            return;
+        }
+
+        lastMainVideoKey = mainVideoKey;
+        lastUserPauseAt = 0;
+
+        if (autoPlayedMainVideoKeys.size > 50) {
+            autoPlayedMainVideoKeys = new Set();
+        }
+
+        if (autoPlayedAdKeys.size > 100) {
+            autoPlayedAdKeys = new Set();
+        }
+
+        if (userPausedMainVideoKeys.size > 50) {
+            userPausedMainVideoKeys = new Set();
+        }
+
+        if (userPausedAdKeys.size > 100) {
+            userPausedAdKeys = new Set();
+        }
+    }
+
+    function attachVideoPauseTracking(video) {
+        if (video === lastVideoElement) {
+            return;
+        }
+
+        lastVideoElement = video;
+
+        video.addEventListener("pause", () => {
+            const now = Date.now();
+
+            if (now < suppressPauseTrackingUntil) {
                 return;
             }
 
-            const adShowing = player.classList.contains("ad-showing") ||
-                document.querySelector(".ytp-ad-player-overlay") ||
-                document.querySelector(".ytp-ad-text") ||
-                document.querySelector(".ytp-ad-skip-button, .ytp-skip-ad-button");
+            if (now - lastUserInputAt > 1500) {
+                return;
+            }
+
+            lastUserPauseAt = now;
+
+            if (isAdShowing()) {
+                userPausedAdKeys.add(getAdKey(video));
+            } else {
+                userPausedMainVideoKeys.add(getMainVideoKey());
+            }
+
+            console.info(`${logPrefix} user pause detected`);
+        }, true);
+    }
+
+    function installInteractionTracker() {
+        const markInteraction = () => {
+            lastUserInputAt = Date.now();
+        };
+
+        window.addEventListener("pointerdown", markInteraction, true);
+        window.addEventListener("mousedown", markInteraction, true);
+        window.addEventListener("touchstart", markInteraction, true);
+        window.addEventListener("keydown", markInteraction, true);
+        window.addEventListener("gamepadconnected", markInteraction, true);
+    }
+
+    function installAdAndAutoplayController() {
+        window.setInterval(() => {
+            const video = findVideoElement();
+
+            if (!video) {
+                return;
+            }
+
+            resetPerVideoStateIfNeeded();
+            attachVideoPauseTracking(video);
+
+            const adShowing = isAdShowing();
 
             if (adShowing) {
-                if (savedRate === null) {
-                    savedRate = video.playbackRate;
-                }
-
-                if (savedMuted === null) {
-                    savedMuted = video.muted;
-                }
-
-                video.muted = true;
-                video.playbackRate = 16;
-                lastTouched = Date.now();
-
-                const skipButton = document.querySelector(".ytp-ad-skip-button, .ytp-skip-ad-button, button.ytp-ad-skip-button-modern");
-
-                if (skipButton) {
-                    skipButton.click();
-                }
-
+                speedUpAd(video);
+                clickFirst(skipSelectors);
+                handlePausedAdAtStart(video);
                 return;
             }
 
-            if (savedRate !== null && Date.now() - lastTouched > 1000) {
-                video.playbackRate = savedRate;
-                video.muted = savedMuted === true;
-                savedRate = null;
-                savedMuted = null;
-            }
+            restoreVideo(video);
+            handlePausedMainVideoAtStart(video);
         }, 200);
     }
 
     patchInitialGlobals();
     patchFetch();
     patchXhr();
-    installAdAccelerator();
+    installInteractionTracker();
+    installAdAndAutoplayController();
 
     console.info(`${logPrefix} installed`);
 })();

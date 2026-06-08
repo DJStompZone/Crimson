@@ -6,20 +6,58 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:primitives="using:Windows.UI.Xaml.Controls.Primitives"
     mc:Ignorable="d"
-    Background="#111111">
+    RequestedTheme="Dark"
+    Background="#221111">
 
-    <Grid>
+    <Page.Resources>
+        <SolidColorBrush x:Key="CrimsonAccentBrush" Color="#AD0A26" />
+        <SolidColorBrush x:Key="CrimsonPanelBrush" Color="#221111" />
+        <SolidColorBrush x:Key="CrimsonPanelAltBrush" Color="#331516" />
+        <SolidColorBrush x:Key="CrimsonChromeBorderBrush" Color="#662126" />
+        <SolidColorBrush x:Key="CrimsonTextBrush" Color="#FFFFFFFF" />
+        <SolidColorBrush x:Key="CrimsonMutedTextBrush" Color="#FFD8C7C7" />
+
+        <Style x:Key="ChromeButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="54" />
+            <Setter Property="Height" Value="48" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Foreground" Value="{StaticResource CrimsonTextBrush}" />
+            <Setter Property="Background" Value="{StaticResource CrimsonPanelAltBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CrimsonChromeBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="UseSystemFocusVisuals" Value="True" />
+        </Style>
+
+        <Style x:Key="ChromeToggleStyle" TargetType="primitives:ToggleButton">
+            <Setter Property="MinWidth" Value="82" />
+            <Setter Property="Height" Value="48" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="Foreground" Value="{StaticResource CrimsonTextBrush}" />
+            <Setter Property="Background" Value="{StaticResource CrimsonPanelAltBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CrimsonAccentBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="UseSystemFocusVisuals" Value="True" />
+        </Style>
+    </Page.Resources>
+
+    <Grid Background="{StaticResource CrimsonPanelBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="48" />
+            <RowDefinition Height="64" />
+            <RowDefinition Height="2" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <Grid
             x:Name="TopBar"
             Grid.Row="0"
-            Background="#1E1E1E"
-            Padding="8,6">
+            Background="{StaticResource CrimsonPanelBrush}"
+            Padding="12,8">
 
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -29,75 +67,87 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <Button
                 x:Name="BackButton"
                 Grid.Column="0"
-                Width="36"
-                Height="36"
-                Margin="0,0,6,0"
+                Style="{StaticResource ChromeButtonStyle}"
                 Click="BackButton_Click"
                 IsEnabled="False">
-                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72B;" />
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="20" Text="&#xE72B;" />
             </Button>
 
             <Button
                 x:Name="ForwardButton"
                 Grid.Column="1"
-                Width="36"
-                Height="36"
-                Margin="0,0,6,0"
+                Style="{StaticResource ChromeButtonStyle}"
                 Click="ForwardButton_Click"
                 IsEnabled="False">
-                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72A;" />
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="20" Text="&#xE72A;" />
             </Button>
 
             <Button
                 x:Name="ReloadButton"
                 Grid.Column="2"
-                Width="36"
-                Height="36"
-                Margin="0,0,8,0"
+                Style="{StaticResource ChromeButtonStyle}"
                 Click="ReloadButton_Click">
-                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" />
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="20" Text="&#xE72C;" />
             </Button>
 
             <TextBox
                 x:Name="AddressBox"
                 Grid.Column="3"
-                Height="36"
+                Height="48"
+                Margin="0,0,8,0"
+                Padding="14,8,14,8"
                 PlaceholderText="Search YouTube or paste URL"
-                KeyDown="AddressBox_KeyDown" />
+                FontSize="18"
+                Foreground="{StaticResource CrimsonTextBrush}"
+                Background="#331516"
+                BorderBrush="{StaticResource CrimsonChromeBorderBrush}"
+                BorderThickness="1"
+                KeyDown="AddressBox_KeyDown"
+                GotFocus="AddressBox_GotFocus" />
 
-            <ToggleSwitch
-                x:Name="AdBlockToggle"
+            <Button
+                x:Name="SearchButton"
                 Grid.Column="4"
-                Margin="10,0,0,0"
-                Header="Adblock"
-                IsOn="True"
-                Toggled="AdBlockToggle_Toggled" />
+                Style="{StaticResource ChromeButtonStyle}"
+                Click="SearchButton_Click">
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="20" Text="&#xE721;" />
+            </Button>
 
-            <ToggleSwitch
-                x:Name="SponsorBlockToggle"
+            <primitives:ToggleButton
+                x:Name="AdBlockToggle"
                 Grid.Column="5"
-                Margin="10,0,0,0"
-                Header="SponsorBlock"
-                IsOn="True"
-                Toggled="SponsorBlockToggle_Toggled" />
+                Style="{StaticResource ChromeToggleStyle}"
+                IsChecked="True"
+                Content="AD ON"
+                Click="AdBlockToggle_Click" />
+
+            <primitives:ToggleButton
+                x:Name="SponsorBlockToggle"
+                Grid.Column="6"
+                Style="{StaticResource ChromeToggleStyle}"
+                IsChecked="True"
+                Content="SB ON"
+                Click="SponsorBlockToggle_Click" />
 
             <Button
                 x:Name="HomeButton"
-                Grid.Column="6"
-                Width="36"
-                Height="36"
-                Margin="10,0,0,0"
+                Grid.Column="7"
+                Style="{StaticResource ChromeButtonStyle}"
+                Margin="0"
                 Click="HomeButton_Click">
-                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE80F;" />
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="20" Text="&#xE80F;" />
             </Button>
         </Grid>
 
-        <Grid Grid.Row="1">
+        <Border Grid.Row="1" Background="{StaticResource CrimsonAccentBrush}" />
+
+        <Grid Grid.Row="2" Background="#000000">
             <muxc:WebView2
                 x:Name="YouTubeView"
                 HorizontalAlignment="Stretch"
@@ -105,20 +155,28 @@
 
             <Border
                 x:Name="LoadingOverlay"
-                Background="#111111"
-                Opacity="0.92"
+                Background="#221111"
+                Opacity="0.97"
                 Visibility="Visible">
                 <StackPanel
                     HorizontalAlignment="Center"
-                    VerticalAlignment="Center">
+                    VerticalAlignment="Center"
+                    MaxWidth="680">
+                    <Image
+                        Source="Assets/SplashScreen.png"
+                        MaxWidth="620"
+                        MaxHeight="300"
+                        Stretch="Uniform" />
                     <ProgressRing
-                        Width="64"
-                        Height="64"
+                        Width="52"
+                        Height="52"
+                        Margin="0,26,0,0"
+                        Foreground="{StaticResource CrimsonAccentBrush}"
                         IsActive="True" />
                     <TextBlock
                         Margin="0,18,0,0"
                         Text="Loading Crimson"
-                        Foreground="White"
+                        Foreground="{StaticResource CrimsonMutedTextBrush}"
                         FontSize="18"
                         HorizontalAlignment="Center" />
                 </StackPanel>

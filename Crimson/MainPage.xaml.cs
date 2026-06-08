@@ -7,6 +7,7 @@ using Windows.Storage.Streams;
 using Windows.System;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Controls.Primitives;
 using Windows.UI.Xaml.Input;
 
 namespace Crimson
@@ -14,6 +15,11 @@ namespace Crimson
     public sealed partial class MainPage : Page
     {
         private const string HomeUrl = "https://www.youtube.com/";
+
+        /// <summary>
+        /// Enables a last-resort Xbox video decoder workaround when diagnosing green-frame playback corruption.
+        /// </summary>
+        private static readonly bool DisableAcceleratedVideoDecode = false;
 
         private readonly AdBlocker adBlocker = new();
 
@@ -26,6 +32,7 @@ namespace Crimson
             InitializeComponent();
 
             isXamlReady = true;
+            UpdateChromeToggleLabels();
             _ = InitializeAsync();
         }
 
@@ -33,10 +40,7 @@ namespace Crimson
         {
             try
             {
-                Environment.SetEnvironmentVariable(
-                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                    "--disable-features=msSmartScreenProtection"
-                );
+                ConfigureWebView2Environment();
 
                 await YouTubeView.EnsureCoreWebView2Async();
 
@@ -54,6 +58,23 @@ namespace Crimson
 
                 await ShowErrorAsync("Crimson failed to initialize WebView2.", ex);
             }
+        }
+
+        private static void ConfigureWebView2Environment()
+        {
+#if DEBUG
+            string additionalBrowserArguments = "--disable-features=msSmartScreenProtection --enable-features=msEdgeDevToolsWdpRemoteDebugging";
+#else
+            string additionalBrowserArguments = "--disable-features=msSmartScreenProtection";
+#endif
+
+            if (DisableAcceleratedVideoDecode)
+            {
+                additionalBrowserArguments += " --disable-accelerated-video-decode";
+            }
+
+            Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", additionalBrowserArguments);
+            Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF221111");
         }
 
         private void ConfigureWebView()
@@ -146,6 +167,8 @@ namespace Crimson
 
             UpdateNavigationButtons();
             _ = PushSettingsToPageAsync();
+
+            YouTubeView?.Focus(FocusState.Programmatic);
         }
 
         private void Core_SourceChanged(CoreWebView2 sender, CoreWebView2SourceChangedEventArgs args)
@@ -210,6 +233,21 @@ namespace Crimson
             }
         }
 
+        private void UpdateChromeToggleLabels()
+        {
+            if (AdBlockToggle is not null)
+            {
+                AdBlockToggle.Content = isAdBlockEnabled ? "AD ON" : "AD OFF";
+                AdBlockToggle.Opacity = isAdBlockEnabled ? 1.0 : 0.58;
+            }
+
+            if (SponsorBlockToggle is not null)
+            {
+                SponsorBlockToggle.Content = isSponsorBlockEnabled ? "SB ON" : "SB OFF";
+                SponsorBlockToggle.Opacity = isSponsorBlockEnabled ? 1.0 : 0.58;
+            }
+        }
+
         private void BackButton_Click(object sender, RoutedEventArgs e)
         {
             if (TryGetCoreWebView2(out CoreWebView2 core) && core.CanGoBack)
@@ -226,17 +264,124 @@ namespace Crimson
             }
         }
 
-        private void ReloadButton_Click(object sender, RoutedEventArgs e)
+        private async void ReloadButton_Click(object sender, RoutedEventArgs e)
         {
-            if (TryGetCoreWebView2(out CoreWebView2 core))
+            await HardReloadCurrentPageAsync();
+        }
+
+
+        private async Task HardReloadCurrentPageAsync()
+        {
+            if (!TryGetCoreWebView2(out CoreWebView2 core))
+            {
+                return;
+            }
+
+            string target = core.Source ?? HomeUrl;
+
+            if (!IsYouTubeUrl(target))
             {
                 core.Reload();
+                return;
             }
+
+            if (LoadingOverlay is not null)
+            {
+                LoadingOverlay.Visibility = Visibility.Visible;
+            }
+
+            await TryStopPageMediaAsync(core);
+
+            core.Navigate("about:blank");
+            await Task.Delay(450);
+
+            core.Navigate(AddCrimsonReloadNonce(target));
+        }
+
+        private static async Task TryStopPageMediaAsync(CoreWebView2 core)
+        {
+            const string script = @"
+(() => {
+    for (const video of document.querySelectorAll('video')) {
+        try {
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+        } catch {
+        }
+    }
+
+    for (const media of document.querySelectorAll('audio')) {
+        try {
+            media.pause();
+            media.removeAttribute('src');
+            media.load();
+        } catch {
+        }
+    }
+})();";
+
+            try
+            {
+                await core.ExecuteScriptAsync(script);
+            }
+            catch
+            {
+            }
+        }
+
+        private static string AddCrimsonReloadNonce(string rawUri)
+        {
+            if (!Uri.TryCreate(rawUri, UriKind.Absolute, out Uri? uri))
+            {
+                return rawUri;
+            }
+
+            if (!IsYouTubeUrl(rawUri))
+            {
+                return rawUri;
+            }
+
+            string baseUri = uri.GetLeftPart(UriPartial.Path);
+            string query = uri.Query.TrimStart('?');
+            string fragment = uri.Fragment;
+            string[] existingParts = string.IsNullOrWhiteSpace(query)
+                ? Array.Empty<string>()
+                : query.Split('&', StringSplitOptions.RemoveEmptyEntries);
+
+            string nonce = "crimson_reload=" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string filteredQuery = string.Join("&", Array.FindAll(existingParts, part => !part.StartsWith("crimson_reload=", StringComparison.OrdinalIgnoreCase)));
+            string updatedQuery = string.IsNullOrWhiteSpace(filteredQuery) ? nonce : filteredQuery + "&" + nonce;
+
+            return baseUri + "?" + updatedQuery + fragment;
+        }
+
+        private static bool IsYouTubeUrl(string? rawUri)
+        {
+            if (string.IsNullOrWhiteSpace(rawUri))
+            {
+                return false;
+            }
+
+            if (!Uri.TryCreate(rawUri, UriKind.Absolute, out Uri? uri))
+            {
+                return false;
+            }
+
+            string host = uri.Host.ToLowerInvariant();
+
+            return host.EndsWith("youtube.com") ||
+                   host.EndsWith("youtu.be");
         }
 
         private void HomeButton_Click(object sender, RoutedEventArgs e)
         {
             Navigate(HomeUrl);
+        }
+
+        private void SearchButton_Click(object sender, RoutedEventArgs e)
+        {
+            NavigateFromAddressBox();
         }
 
         private void AddressBox_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -247,25 +392,42 @@ namespace Crimson
             }
 
             e.Handled = true;
+            NavigateFromAddressBox();
+        }
 
+        private void AddressBox_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (sender is TextBox textBox)
+            {
+                textBox.SelectAll();
+            }
+        }
+
+        private void NavigateFromAddressBox()
+        {
             string target = BuildNavigationTarget(AddressBox?.Text);
             Navigate(target);
+            YouTubeView?.Focus(FocusState.Programmatic);
         }
 
-        private void AdBlockToggle_Toggled(object sender, RoutedEventArgs e)
+        private void AdBlockToggle_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is ToggleSwitch toggle)
+            if (sender is ToggleButton toggle)
             {
-                isAdBlockEnabled = toggle.IsOn;
+                isAdBlockEnabled = toggle.IsChecked == true;
             }
+
+            UpdateChromeToggleLabels();
         }
 
-        private void SponsorBlockToggle_Toggled(object sender, RoutedEventArgs e)
+        private void SponsorBlockToggle_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is ToggleSwitch toggle)
+            if (sender is ToggleButton toggle)
             {
-                isSponsorBlockEnabled = toggle.IsOn;
+                isSponsorBlockEnabled = toggle.IsChecked == true;
             }
+
+            UpdateChromeToggleLabels();
 
             if (!isXamlReady)
             {
@@ -298,7 +460,8 @@ namespace Crimson
             }
 
             string sponsorBlockValue = isSponsorBlockEnabled ? "true" : "false";
-            string script = $"window.__crimsonSettings = {{ sponsorBlockEnabled: {sponsorBlockValue} }}; window.dispatchEvent(new Event('crimson-settings-changed'));";
+            string adBlockValue = isAdBlockEnabled ? "true" : "false";
+            string script = $"window.__crimsonSettings = {{ sponsorBlockEnabled: {sponsorBlockValue}, adBlockEnabled: {adBlockValue}, xboxAutoplayAtStart: true }}; window.dispatchEvent(new Event('crimson-settings-changed'));";
 
             await core.ExecuteScriptAsync(script);
         }
@@ -306,7 +469,6 @@ namespace Crimson
         private bool TryGetCoreWebView2(out CoreWebView2 core)
         {
             core = YouTubeView?.CoreWebView2!;
-
             return core is not null;
         }
 
