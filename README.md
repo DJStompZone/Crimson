@@ -1,0 +1,1 @@
+<div align="center"><h1>Crimson</h1><img width="75%" alt="Crimson banner" src="https://github.com/user-attachments/assets/9ded2ea5-9f06-4248-a808-737758f68549" /><p>An open-source, ad-optional, Xbox-compatible YouTube client.</p></div>
