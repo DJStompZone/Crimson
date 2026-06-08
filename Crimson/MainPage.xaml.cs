@@ -19,10 +19,13 @@ namespace Crimson
 
         private bool isAdBlockEnabled = true;
         private bool isSponsorBlockEnabled = true;
+        private bool isXamlReady;
 
         public MainPage()
         {
             InitializeComponent();
+
+            isXamlReady = true;
             _ = InitializeAsync();
         }
 
@@ -44,16 +47,18 @@ namespace Crimson
             }
             catch (Exception ex)
             {
-                LoadingOverlay.Visibility = Visibility.Collapsed;
+                if (LoadingOverlay is not null)
+                {
+                    LoadingOverlay.Visibility = Visibility.Collapsed;
+                }
+
                 await ShowErrorAsync("Crimson failed to initialize WebView2.", ex);
             }
         }
 
         private void ConfigureWebView()
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
-
-            if (core is null)
+            if (!TryGetCoreWebView2(out CoreWebView2 core))
             {
                 throw new InvalidOperationException("WebView2 initialized, but CoreWebView2 is still null. Extremely normal Microsoft behavior.");
             }
@@ -75,9 +80,7 @@ namespace Crimson
 
         private async Task InjectScriptsAsync()
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
-
-            if (core is null)
+            if (!TryGetCoreWebView2(out CoreWebView2 core))
             {
                 return;
             }
@@ -123,20 +126,35 @@ namespace Crimson
 
         private void Core_NavigationStarting(CoreWebView2 sender, CoreWebView2NavigationStartingEventArgs args)
         {
-            LoadingOverlay.Visibility = Visibility.Visible;
+            if (LoadingOverlay is not null)
+            {
+                LoadingOverlay.Visibility = Visibility.Visible;
+            }
         }
 
         private void Core_NavigationCompleted(CoreWebView2 sender, CoreWebView2NavigationCompletedEventArgs args)
         {
-            LoadingOverlay.Visibility = Visibility.Collapsed;
-            AddressBox.Text = sender.Source ?? string.Empty;
+            if (LoadingOverlay is not null)
+            {
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+            }
+
+            if (AddressBox is not null)
+            {
+                AddressBox.Text = sender.Source ?? string.Empty;
+            }
+
             UpdateNavigationButtons();
             _ = PushSettingsToPageAsync();
         }
 
         private void Core_SourceChanged(CoreWebView2 sender, CoreWebView2SourceChangedEventArgs args)
         {
-            AddressBox.Text = sender.Source ?? string.Empty;
+            if (AddressBox is not null)
+            {
+                AddressBox.Text = sender.Source ?? string.Empty;
+            }
+
             UpdateNavigationButtons();
         }
 
@@ -154,6 +172,11 @@ namespace Crimson
 
         private void Core_ContainsFullScreenElementChanged(CoreWebView2 sender, object args)
         {
+            if (TopBar is null)
+            {
+                return;
+            }
+
             TopBar.Visibility = sender.ContainsFullScreenElement
                 ? Visibility.Collapsed
                 : Visibility.Visible;
@@ -161,17 +184,35 @@ namespace Crimson
 
         private void UpdateNavigationButtons()
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
+            if (!TryGetCoreWebView2(out CoreWebView2 core))
+            {
+                if (BackButton is not null)
+                {
+                    BackButton.IsEnabled = false;
+                }
 
-            BackButton.IsEnabled = core?.CanGoBack == true;
-            ForwardButton.IsEnabled = core?.CanGoForward == true;
+                if (ForwardButton is not null)
+                {
+                    ForwardButton.IsEnabled = false;
+                }
+
+                return;
+            }
+
+            if (BackButton is not null)
+            {
+                BackButton.IsEnabled = core.CanGoBack;
+            }
+
+            if (ForwardButton is not null)
+            {
+                ForwardButton.IsEnabled = core.CanGoForward;
+            }
         }
 
         private void BackButton_Click(object sender, RoutedEventArgs e)
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
-
-            if (core?.CanGoBack == true)
+            if (TryGetCoreWebView2(out CoreWebView2 core) && core.CanGoBack)
             {
                 core.GoBack();
             }
@@ -179,9 +220,7 @@ namespace Crimson
 
         private void ForwardButton_Click(object sender, RoutedEventArgs e)
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
-
-            if (core?.CanGoForward == true)
+            if (TryGetCoreWebView2(out CoreWebView2 core) && core.CanGoForward)
             {
                 core.GoForward();
             }
@@ -189,7 +228,10 @@ namespace Crimson
 
         private void ReloadButton_Click(object sender, RoutedEventArgs e)
         {
-            YouTubeView.CoreWebView2?.Reload();
+            if (TryGetCoreWebView2(out CoreWebView2 core))
+            {
+                core.Reload();
+            }
         }
 
         private void HomeButton_Click(object sender, RoutedEventArgs e)
@@ -206,26 +248,36 @@ namespace Crimson
 
             e.Handled = true;
 
-            string target = BuildNavigationTarget(AddressBox.Text);
+            string target = BuildNavigationTarget(AddressBox?.Text);
             Navigate(target);
         }
 
         private void AdBlockToggle_Toggled(object sender, RoutedEventArgs e)
         {
-            isAdBlockEnabled = AdBlockToggle.IsOn;
+            if (sender is ToggleSwitch toggle)
+            {
+                isAdBlockEnabled = toggle.IsOn;
+            }
         }
 
         private void SponsorBlockToggle_Toggled(object sender, RoutedEventArgs e)
         {
-            isSponsorBlockEnabled = SponsorBlockToggle.IsOn;
+            if (sender is ToggleSwitch toggle)
+            {
+                isSponsorBlockEnabled = toggle.IsOn;
+            }
+
+            if (!isXamlReady)
+            {
+                return;
+            }
+
             _ = PushSettingsToPageAsync();
         }
 
         private void Navigate(string target)
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
-
-            if (core is null)
+            if (!TryGetCoreWebView2(out CoreWebView2 core))
             {
                 return;
             }
@@ -235,9 +287,12 @@ namespace Crimson
 
         private async Task PushSettingsToPageAsync()
         {
-            CoreWebView2? core = YouTubeView.CoreWebView2;
+            if (!isXamlReady)
+            {
+                return;
+            }
 
-            if (core is null)
+            if (!TryGetCoreWebView2(out CoreWebView2 core))
             {
                 return;
             }
@@ -246,6 +301,13 @@ namespace Crimson
             string script = $"window.__crimsonSettings = {{ sponsorBlockEnabled: {sponsorBlockValue} }}; window.dispatchEvent(new Event('crimson-settings-changed'));";
 
             await core.ExecuteScriptAsync(script);
+        }
+
+        private bool TryGetCoreWebView2(out CoreWebView2 core)
+        {
+            core = YouTubeView?.CoreWebView2!;
+
+            return core is not null;
         }
 
         private static string BuildNavigationTarget(string? input)
