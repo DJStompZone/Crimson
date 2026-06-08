@@ -70,17 +70,22 @@
 
     const playSelectors = [
         ".ytp-large-play-button",
-        ".ytp-play-button[aria-label='Play']",
-        ".ytp-play-button[title='Play']",
+        ".ytp-play-button",
         "button[aria-label='Play']",
         "button[aria-label^='Play']",
         "button[title='Play']",
         "button[title^='Play']"
     ];
 
-    const startTimeThresholdSeconds = 0.5;
+    const startTimeThresholdSeconds = 0.45;
     const playKickCooldownMs = 450;
-    const userPauseCooldownMs = 30000;
+    const userPauseCooldownMs = 5000;
+    const xboxAdReloadMaxAttempts = 3;
+    const xboxAdReloadDelayMs = 1100;
+    const xboxAdReloadStartThresholdSeconds = 2.5;
+    const forcedAdSeekDelayMs = 1200;
+    const forcedAdSeekCooldownMs = 700;
+    const forcedAdSeekStepSeconds = 8;
 
     let savedRate = null;
     let savedMuted = null;
@@ -91,18 +96,33 @@
     let suppressPauseTrackingUntil = 0;
     let lastVideoElement = null;
     let lastMainVideoKey = null;
+    let lastForcedSeekAt = 0;
+    let adDetectedAt = 0;
+    let mainVideoHasPlayed = false;
+    let scheduledXboxReloadKey = null;
+    let enabledPlatform = "auto";
     let autoPlayedMainVideoKeys = new Set();
     let autoPlayedAdKeys = new Set();
-    let userPausedMainVideoKeys = new Set();
-    let userPausedAdKeys = new Set();
 
     function readSettings() {
         const settings = window.__crimsonSettings;
 
-        return {
-            adBlockEnabled: settings?.adBlockEnabled !== false,
-            autoplayAtStart: settings?.xboxAutoplayAtStart !== false
-        };
+        if (!settings) {
+            enabledPlatform = "auto";
+            return;
+        }
+
+        enabledPlatform = settings.platform || "auto";
+    }
+
+    function isXboxLike() {
+        readSettings();
+
+        if (enabledPlatform === "xbox") {
+            return true;
+        }
+
+        return /Xbox/i.test(navigator.userAgent || "") || /Xbox/i.test(navigator.platform || "");
     }
 
     function shouldPruneUrl(rawUrl) {
@@ -192,10 +212,9 @@
             const response = await originalFetch.apply(this, arguments);
 
             try {
-                const settings = readSettings();
                 const url = typeof input === "string" ? input : input?.url;
 
-                if (!settings.adBlockEnabled || !shouldPruneUrl(url)) {
+                if (!shouldPruneUrl(url)) {
                     return response;
                 }
 
@@ -234,9 +253,7 @@
         };
 
         XMLHttpRequest.prototype.send = function crimsonSend() {
-            const settings = readSettings();
-
-            if (!settings.adBlockEnabled || !shouldPruneUrl(this.__crimsonUrl)) {
+            if (!shouldPruneUrl(this.__crimsonUrl)) {
                 return originalSend.apply(this, arguments);
             }
 
@@ -287,14 +304,14 @@
             Object.defineProperty(window, name, {
                 configurable: true,
                 get() {
-                    if (currentValue && typeof currentValue === "object" && readSettings().adBlockEnabled) {
+                    if (currentValue && typeof currentValue === "object") {
                         pruneJson(currentValue);
                     }
 
                     return currentValue;
                 },
                 set(value) {
-                    if (value && typeof value === "object" && readSettings().adBlockEnabled) {
+                    if (value && typeof value === "object") {
                         pruneJson(value);
                     }
 
@@ -302,7 +319,7 @@
                 }
             });
 
-            if (currentValue && typeof currentValue === "object" && readSettings().adBlockEnabled) {
+            if (currentValue && typeof currentValue === "object") {
                 pruneJson(currentValue);
             }
         } catch (error) {
@@ -334,7 +351,7 @@
             return null;
         }
 
-        return videos.find(video => video.duration > 0) || videos[0];
+        return videos.find(video => Number.isFinite(video.duration) && video.duration > 0) || videos[0];
     }
 
     function findPlayerElement() {
@@ -360,26 +377,26 @@
     }
 
     function getMainVideoKey() {
-        return `${getVideoId()}@${location.pathname}${location.search}`;
+        return `${getVideoId()}@${location.pathname}${location.search.replace(/([?&])crimson_reload=[^&]*/g, "")}`;
     }
 
     function getAdKey(video) {
         const videoKey = getMainVideoKey();
         const duration = Number.isFinite(video.duration) ? video.duration.toFixed(2) : "unknown-duration";
-        const source = video.currentSrc || video.src || "unknown-source";
 
-        return `${videoKey}:ad:${duration}:${hashString(source)}`;
+        return `${videoKey}:ad:${duration}`;
     }
 
-    function hashString(value) {
-        let hash = 0;
+    function getReloadStorageKey() {
+        return `crimson:xbox-ad-reload:${getVideoId()}`;
+    }
 
-        for (let index = 0; index < value.length; index += 1) {
-            hash = ((hash << 5) - hash) + value.charCodeAt(index);
-            hash |= 0;
-        }
+    function getReloadAttemptCount() {
+        return Number(sessionStorage.getItem(getReloadStorageKey()) || "0");
+    }
 
-        return hash.toString(16);
+    function setReloadAttemptCount(value) {
+        sessionStorage.setItem(getReloadStorageKey(), String(value));
     }
 
     function isNearStart(video) {
@@ -459,9 +476,41 @@
         }
 
         lastAdTouchAt = Date.now();
+
+        if (adDetectedAt === 0) {
+            adDetectedAt = lastAdTouchAt;
+        }
+    }
+
+    function forceSeekAd(video) {
+        const now = Date.now();
+
+        if (now - adDetectedAt < forcedAdSeekDelayMs || now - lastForcedSeekAt < forcedAdSeekCooldownMs) {
+            return;
+        }
+
+        if (!Number.isFinite(video.currentTime) || !Number.isFinite(video.duration) || video.duration <= 0) {
+            return;
+        }
+
+        const nextTime = Math.min(video.duration - 0.2, video.currentTime + forcedAdSeekStepSeconds);
+
+        if (nextTime <= video.currentTime) {
+            return;
+        }
+
+        try {
+            video.currentTime = nextTime;
+            lastForcedSeekAt = now;
+            console.info(`${logPrefix} forced ad seek to ${nextTime}`);
+        } catch (error) {
+            console.debug(`${logPrefix} forced ad seek rejected`, error);
+        }
     }
 
     function restoreVideo(video) {
+        adDetectedAt = 0;
+
         if (savedRate === null || Date.now() - lastAdTouchAt <= 1000) {
             return;
         }
@@ -478,34 +527,31 @@
         savedMuted = null;
     }
 
-    function shouldRespectRecentUserPause() {
+    function shouldRespectRecentUserPause(video) {
+        if (isNearStart(video)) {
+            return false;
+        }
+
         return Date.now() - lastUserPauseAt < userPauseCooldownMs;
     }
 
     function handlePausedAdAtStart(video) {
-        const settings = readSettings();
-
-        if (!settings.autoplayAtStart || !video.paused || !isNearStart(video)) {
+        if (!video.paused || !isNearStart(video)) {
             return;
         }
 
         const adKey = getAdKey(video);
 
-        if (autoPlayedAdKeys.has(adKey) || userPausedAdKeys.has(adKey) || shouldRespectRecentUserPause()) {
+        if (autoPlayedAdKeys.has(adKey)) {
             return;
         }
 
-        tryPlay(video, "paused ad at start").then(success => {
-            if (success) {
-                autoPlayedAdKeys.add(adKey);
-            }
-        });
+        autoPlayedAdKeys.add(adKey);
+        tryPlay(video, "paused ad at start");
     }
 
     function handlePausedMainVideoAtStart(video) {
-        const settings = readSettings();
-
-        if (!settings.autoplayAtStart || !video.paused || !isNearStart(video)) {
+        if (!video.paused || !isNearStart(video)) {
             return;
         }
 
@@ -513,17 +559,83 @@
             return;
         }
 
-        const mainVideoKey = getMainVideoKey();
-
-        if (autoPlayedMainVideoKeys.has(mainVideoKey) || userPausedMainVideoKeys.has(mainVideoKey) || shouldRespectRecentUserPause()) {
+        if (shouldRespectRecentUserPause(video)) {
             return;
         }
 
-        tryPlay(video, "paused main video at start").then(success => {
-            if (success) {
-                autoPlayedMainVideoKeys.add(mainVideoKey);
+        const mainVideoKey = getMainVideoKey();
+
+        if (autoPlayedMainVideoKeys.has(mainVideoKey)) {
+            return;
+        }
+
+        autoPlayedMainVideoKeys.add(mainVideoKey);
+        tryPlay(video, "paused main video at start");
+    }
+
+    function maybeReloadXboxPreRoll(video) {
+        if (!isXboxLike()) {
+            return;
+        }
+
+        if (!location.href.includes("/watch?")) {
+            return;
+        }
+
+        if (mainVideoHasPlayed) {
+            return;
+        }
+
+        if (!isAdShowing()) {
+            return;
+        }
+
+        if (Number.isFinite(video.currentTime) && video.currentTime > xboxAdReloadStartThresholdSeconds) {
+            return;
+        }
+
+        const attempts = getReloadAttemptCount();
+
+        if (attempts >= xboxAdReloadMaxAttempts) {
+            return;
+        }
+
+        const reloadKey = `${getMainVideoKey()}:${attempts}`;
+
+        if (scheduledXboxReloadKey === reloadKey) {
+            return;
+        }
+
+        scheduledXboxReloadKey = reloadKey;
+        setReloadAttemptCount(attempts + 1);
+
+        window.setTimeout(() => {
+            if (!isAdShowing() || mainVideoHasPlayed) {
+                return;
             }
-        });
+
+            console.info(`${logPrefix} requesting Xbox pre-roll hard reload attempt ${attempts + 1}`);
+            requestHostHardReload();
+        }, xboxAdReloadDelayMs);
+    }
+
+    function requestHostHardReload() {
+        try {
+            if (window.chrome?.webview?.postMessage) {
+                window.chrome.webview.postMessage("crimson-hard-reload");
+                return;
+            }
+        } catch (error) {
+            console.debug(`${logPrefix} host reload message failed`, error);
+        }
+
+        try {
+            const url = new URL(location.href);
+            url.searchParams.set("crimson_reload", String(Date.now()));
+            location.replace(url.toString());
+        } catch {
+            location.reload();
+        }
     }
 
     function resetPerVideoStateIfNeeded() {
@@ -535,6 +647,9 @@
 
         lastMainVideoKey = mainVideoKey;
         lastUserPauseAt = 0;
+        adDetectedAt = 0;
+        mainVideoHasPlayed = false;
+        scheduledXboxReloadKey = null;
 
         if (autoPlayedMainVideoKeys.size > 50) {
             autoPlayedMainVideoKeys = new Set();
@@ -542,14 +657,6 @@
 
         if (autoPlayedAdKeys.size > 100) {
             autoPlayedAdKeys = new Set();
-        }
-
-        if (userPausedMainVideoKeys.size > 50) {
-            userPausedMainVideoKeys = new Set();
-        }
-
-        if (userPausedAdKeys.size > 100) {
-            userPausedAdKeys = new Set();
         }
     }
 
@@ -567,19 +674,10 @@
                 return;
             }
 
-            if (now - lastUserInputAt > 1500) {
-                return;
+            if (now - lastUserInputAt <= 1500 && !isNearStart(video)) {
+                lastUserPauseAt = now;
+                console.info(`${logPrefix} user pause detected`);
             }
-
-            lastUserPauseAt = now;
-
-            if (isAdShowing()) {
-                userPausedAdKeys.add(getAdKey(video));
-            } else {
-                userPausedMainVideoKeys.add(getMainVideoKey());
-            }
-
-            console.info(`${logPrefix} user pause detected`);
         }, true);
     }
 
@@ -597,6 +695,8 @@
 
     function installAdAndAutoplayController() {
         window.setInterval(() => {
+            readSettings();
+
             const video = findVideoElement();
 
             if (!video) {
@@ -612,7 +712,17 @@
                 speedUpAd(video);
                 clickFirst(skipSelectors);
                 handlePausedAdAtStart(video);
+                maybeReloadXboxPreRoll(video);
+
+                if (!isXboxLike()) {
+                    forceSeekAd(video);
+                }
+
                 return;
+            }
+
+            if (!video.paused && Number.isFinite(video.currentTime) && video.currentTime > 0.5 && location.href.includes("/watch?")) {
+                mainVideoHasPlayed = true;
             }
 
             restoreVideo(video);
